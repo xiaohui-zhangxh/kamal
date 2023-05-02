@@ -1,0 +1,17 @@
+service: app
+image: app
+servers:
+  - vm1
+  - vm2
+registry:
+  server: registry:4443
+  username: root
+  password: root
+builder:
+  multiarch: false
+healthcheck:
+  cmd: wget -qO- http://localhost > /dev/null
+traefik:
+  args:
+    accesslog: true
+    accesslog.format: json

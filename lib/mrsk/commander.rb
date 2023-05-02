@@ -51,6 +51,14 @@ class Mrsk::Commander
     end
   end
 
+  def boot_strategy
+    if config.boot.limit.present?
+      { in: :groups, limit: config.boot.limit, wait: config.boot.wait }
+    else
+      {}
+    end
+  end
+
   def roles_on(host)
     roles.select { |role| role.hosts.include?(host.to_s) }.map(&:name)
   end
@@ -82,6 +90,10 @@ class Mrsk::Commander
 
   def builder
     @builder ||= Mrsk::Commands::Builder.new(config)
+  end
+
+  def docker
+    @docker ||= Mrsk::Commands::Docker.new(config)
   end
 
   def healthcheck

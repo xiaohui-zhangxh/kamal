@@ -17,9 +17,6 @@ class Mrsk::Cli::Main < Mrsk::Cli::Base
       invoke_options = deploy_options
 
       runtime = print_runtime do
-        say "Ensure curl and Docker are installed...", :magenta
-        invoke "mrsk:cli:server:bootstrap", [], invoke_options
-
         say "Log into image registry...", :magenta
         invoke "mrsk:cli:registry:login", [], invoke_options
 
@@ -236,15 +233,24 @@ class Mrsk::Cli::Main < Mrsk::Cli::Base
   subcommand "lock", Mrsk::Cli::Lock
 
   private
-    def container_available?(version, host: MRSK.primary_host)
-      available = nil
-
-      on(host) do
-        first_role = MRSK.roles_on(host).first
-        available = capture_with_info(*MRSK.app(role: first_role).container_id_for_version(version)).present?
+    def container_available?(version)
+      begin
+        on(MRSK.hosts) do
+          MRSK.roles_on(host).each do |role|
+            container_id = capture_with_info(*MRSK.app(role: role).container_id_for_version(version))
+            raise "Container not found" unless container_id.present?
+          end
+        end
+      rescue SSHKit::Runner::ExecuteError => e
+        if e.message =~ /Container not found/
+          say "Error looking for container version #{version}: #{e.message}"
+          return false
+        else
+          raise
+        end
       end
 
-      available
+      true
     end
 
     def deploy_options

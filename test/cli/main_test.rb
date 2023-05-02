@@ -12,7 +12,6 @@ class CliMainTest < CliTestCase
   test "deploy" do
     invoke_options = { "config_file" => "test/fixtures/deploy_simple.yml", "skip_broadcast" => false, "version" => "999" }
 
-    Mrsk::Cli::Main.any_instance.expects(:invoke).with("mrsk:cli:server:bootstrap", [], invoke_options)
     Mrsk::Cli::Main.any_instance.expects(:invoke).with("mrsk:cli:registry:login", [], invoke_options)
     Mrsk::Cli::Main.any_instance.expects(:invoke).with("mrsk:cli:build:deliver", [], invoke_options)
     Mrsk::Cli::Main.any_instance.expects(:invoke).with("mrsk:cli:traefik:boot", [], invoke_options)
@@ -22,7 +21,6 @@ class CliMainTest < CliTestCase
     Mrsk::Cli::Main.any_instance.expects(:invoke).with("mrsk:cli:prune:all", [], invoke_options)
 
     run_command("deploy").tap do |output|
-      assert_match /Ensure curl and Docker are installed/, output
       assert_match /Log into image registry/, output
       assert_match /Build and push app image/, output
       assert_match /Ensure Traefik is running/, output
@@ -35,7 +33,6 @@ class CliMainTest < CliTestCase
   test "deploy with skip_push" do
     invoke_options = { "config_file" => "test/fixtures/deploy_simple.yml", "skip_broadcast" => false, "version" => "999" }
 
-    Mrsk::Cli::Main.any_instance.expects(:invoke).with("mrsk:cli:server:bootstrap", [], invoke_options)
     Mrsk::Cli::Main.any_instance.expects(:invoke).with("mrsk:cli:registry:login", [], invoke_options)
     Mrsk::Cli::Main.any_instance.expects(:invoke).with("mrsk:cli:build:pull", [], invoke_options)
     Mrsk::Cli::Main.any_instance.expects(:invoke).with("mrsk:cli:traefik:boot", [], invoke_options)
@@ -46,7 +43,6 @@ class CliMainTest < CliTestCase
 
     run_command("deploy", "--skip_push").tap do |output|
       assert_match /Acquiring the deploy lock/, output
-      assert_match /Ensure curl and Docker are installed/, output
       assert_match /Log into image registry/, output
       assert_match /Pull app image/, output
       assert_match /Ensure Traefik is running/, output
@@ -64,7 +60,8 @@ class CliMainTest < CliTestCase
       .with { |*arg| arg[0..1] == [:mkdir, :mrsk_lock] }
       .raises(RuntimeError, "mkdir: cannot create directory ‘mrsk_lock’: File exists")
 
-    Mrsk::Cli::Base.any_instance.expects(:invoke).with("mrsk:cli:lock:status", [])
+    SSHKit::Backend::Abstract.any_instance.expects(:execute)
+      .with(:stat, :mrsk_lock, ">", "/dev/null", "&&", :cat, "mrsk_lock/details", "|", :base64, "-d")
 
     assert_raises(Mrsk::Cli::LockError) do
       run_command("deploy")
@@ -86,7 +83,6 @@ class CliMainTest < CliTestCase
   test "deploy errors during critical section leave lock in place" do
     invoke_options = { "config_file" => "test/fixtures/deploy_simple.yml", "skip_broadcast" => false, "version" => "999" }
 
-    Mrsk::Cli::Main.any_instance.expects(:invoke).with("mrsk:cli:server:bootstrap", [], invoke_options)
     Mrsk::Cli::Main.any_instance.expects(:invoke).with("mrsk:cli:registry:login", [], invoke_options)
     Mrsk::Cli::Main.any_instance.expects(:invoke).with("mrsk:cli:build:deliver", [], invoke_options)
     Mrsk::Cli::Main.any_instance.expects(:invoke).with("mrsk:cli:app:stale_containers", [], invoke_options)
@@ -105,7 +101,7 @@ class CliMainTest < CliTestCase
     invoke_options = { "config_file" => "test/fixtures/deploy_simple.yml", "skip_broadcast" => false, "version" => "999" }
 
     Mrsk::Cli::Main.any_instance.expects(:invoke)
-      .with("mrsk:cli:server:bootstrap", [], invoke_options)
+      .with("mrsk:cli:registry:login", [], invoke_options)
       .raises(RuntimeError)
 
     assert !MRSK.holding_lock?
@@ -144,7 +140,8 @@ class CliMainTest < CliTestCase
   end
 
   test "rollback bad version" do
-    # Mrsk::Cli::Main.any_instance.stubs(:container_available?).returns(false)
+    Thread.report_on_exception = false
+
     run_command("details") # Preheat MRSK const
 
     run_command("rollback", "nonsense").tap do |output|
@@ -154,9 +151,19 @@ class CliMainTest < CliTestCase
   end
 
   test "rollback good version" do
-    Mrsk::Cli::Main.any_instance.stubs(:container_available?).returns(true)
-    SSHKit::Backend::Abstract.any_instance.expects(:capture_with_info).with(:docker, :ps, "--filter", "label=service=app", "--filter", "label=role=web", "--filter", "status=running", "--latest", "--format", "\"{{.Names}}\"", "|", "grep -oE \"\\-[^-]+$\"", "|", "cut -c 2-").returns("version-to-rollback\n").at_least_once
-    SSHKit::Backend::Abstract.any_instance.expects(:capture_with_info).with(:docker, :ps, "--filter", "label=service=app", "--filter", "label=role=workers", "--filter", "status=running", "--latest", "--format", "\"{{.Names}}\"", "|", "grep -oE \"\\-[^-]+$\"", "|", "cut -c 2-").returns("version-to-rollback\n").at_least_once
+    SSHKit::Backend::Abstract.any_instance.expects(:capture_with_info)
+      .with(:docker, :container, :ls, "--all", "--filter", "name=^app-web-123$", "--quiet")
+      .returns("version-to-rollback\n").at_least_once
+    SSHKit::Backend::Abstract.any_instance.expects(:capture_with_info)
+      .with(:docker, :container, :ls, "--all", "--filter", "name=^app-workers-123$", "--quiet")
+      .returns("version-to-rollback\n").at_least_once
+    SSHKit::Backend::Abstract.any_instance.expects(:capture_with_info)
+      .with(:docker, :ps, "--filter", "label=service=app", "--filter", "label=role=web", "--filter", "status=running", "--latest", "--format", "\"{{.Names}}\"", "|", "grep -oE \"\\-[^-]+$\"", "|", "cut -c 2-")
+      .returns("version-to-rollback\n").at_least_once
+    SSHKit::Backend::Abstract.any_instance.expects(:capture_with_info)
+      .with(:docker, :ps, "--filter", "label=service=app", "--filter", "label=role=workers", "--filter", "status=running", "--latest", "--format", "\"{{.Names}}\"", "|", "grep -oE \"\\-[^-]+$\"", "|", "cut -c 2-")
+      .returns("version-to-rollback\n").at_least_once
+
 
     run_command("rollback", "123", config_file: "deploy_with_accessories").tap do |output|
       assert_match "Start version 123", output
