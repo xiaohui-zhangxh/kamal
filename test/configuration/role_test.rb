@@ -38,11 +38,11 @@ class ConfigurationRoleTest < ActiveSupport::TestCase
   end
 
   test "label args" do
-    assert_equal [ "--label", "service=\"app\"", "--label", "role=\"workers\"" ], @config_with_roles.role(:workers).label_args
+    assert_equal [ "--label", "service=app", "--label", "role=workers" ], @config_with_roles.role(:workers).label_args
   end
 
   test "special label args for web" do
-    assert_equal [ "--label", "service=\"app\"", "--label", "role=\"web\"", "--label", "traefik.http.routers.app-web.rule=\"PathPrefix(\\`/\\`)\"", "--label", "traefik.http.services.app-web.loadbalancer.healthcheck.path=\"/up\"", "--label", "traefik.http.services.app-web.loadbalancer.healthcheck.interval=\"1s\"", "--label", "traefik.http.middlewares.app-web-retry.retry.attempts=\"5\"", "--label", "traefik.http.middlewares.app-web-retry.retry.initialinterval=\"500ms\"", "--label", "traefik.http.routers.app-web.middlewares=\"app-web-retry@docker\"" ], @config.role(:web).label_args
+    assert_equal [ "--label", "service=app", "--label", "role=web", "--label", "traefik.http.routers.app-web.rule=PathPrefix\\(\\`/\\`\\)", "--label", "traefik.http.services.app-web.loadbalancer.healthcheck.path=/up", "--label", "traefik.http.services.app-web.loadbalancer.healthcheck.interval=1s", "--label", "traefik.http.middlewares.app-web-retry.retry.attempts=5", "--label", "traefik.http.middlewares.app-web-retry.retry.initialinterval=500ms", "--label", "traefik.http.routers.app-web.middlewares=app-web-retry@docker" ], @config.role(:web).label_args
   end
 
   test "custom labels" do
@@ -66,7 +66,7 @@ class ConfigurationRoleTest < ActiveSupport::TestCase
       c[:servers]["beta"] = { "traefik" => "true", "hosts" => [ "1.1.1.5" ] }
     })
 
-    assert_equal [ "--label", "service=\"app\"", "--label", "role=\"beta\"", "--label", "traefik.http.routers.app-beta.rule=\"PathPrefix(\\`/\\`)\"", "--label", "traefik.http.services.app-beta.loadbalancer.healthcheck.path=\"/up\"", "--label", "traefik.http.services.app-beta.loadbalancer.healthcheck.interval=\"1s\"", "--label", "traefik.http.middlewares.app-beta-retry.retry.attempts=\"5\"", "--label", "traefik.http.middlewares.app-beta-retry.retry.initialinterval=\"500ms\"", "--label", "traefik.http.routers.app-beta.middlewares=\"app-beta-retry@docker\"" ], config.role(:beta).label_args
+    assert_equal [ "--label", "service=app", "--label", "role=beta", "--label", "traefik.http.routers.app-beta.rule=PathPrefix\\(\\`/\\`\\)", "--label", "traefik.http.services.app-beta.loadbalancer.healthcheck.path=/up", "--label", "traefik.http.services.app-beta.loadbalancer.healthcheck.interval=1s", "--label", "traefik.http.middlewares.app-beta-retry.retry.attempts=5", "--label", "traefik.http.middlewares.app-beta-retry.retry.initialinterval=500ms", "--label", "traefik.http.routers.app-beta.middlewares=app-beta-retry@docker" ], config.role(:beta).label_args
   end
 
   test "default traefik label for non-web role with destination" do
@@ -74,12 +74,12 @@ class ConfigurationRoleTest < ActiveSupport::TestCase
       c[:servers]["beta"] = { "traefik" => "true", "hosts" => [ "1.1.1.5" ] }
     }, destination: "staging")
 
-    assert_equal [ "--label", "service=\"app\"", "--label", "role=\"beta\"", "--label", "destination=\"staging\"", "--label", "traefik.http.routers.app-beta-staging.rule=\"PathPrefix(\\`/\\`)\"", "--label", "traefik.http.services.app-beta-staging.loadbalancer.healthcheck.path=\"/up\"", "--label", "traefik.http.services.app-beta-staging.loadbalancer.healthcheck.interval=\"1s\"", "--label", "traefik.http.middlewares.app-beta-staging-retry.retry.attempts=\"5\"", "--label", "traefik.http.middlewares.app-beta-staging-retry.retry.initialinterval=\"500ms\"", "--label", "traefik.http.routers.app-beta-staging.middlewares=\"app-beta-staging-retry@docker\"" ], config.role(:beta).label_args
+    assert_equal [ "--label", "service=app", "--label", "role=beta", "--label", "destination=staging", "--label", "traefik.http.routers.app-beta-staging.rule=PathPrefix\\(\\`/\\`\\)", "--label", "traefik.http.services.app-beta-staging.loadbalancer.healthcheck.path=/up", "--label", "traefik.http.services.app-beta-staging.loadbalancer.healthcheck.interval=1s", "--label", "traefik.http.middlewares.app-beta-staging-retry.retry.attempts=5", "--label", "traefik.http.middlewares.app-beta-staging-retry.retry.initialinterval=500ms", "--label", "traefik.http.routers.app-beta-staging.middlewares=app-beta-staging-retry@docker" ], config.role(:beta).label_args
   end
 
   test "env overwritten by role" do
     assert_equal "redis://a/b", @config_with_roles.role(:workers).env["REDIS_URL"]
-    assert_equal ["-e", "REDIS_URL=\"redis://a/b\"", "-e", "WEB_CONCURRENCY=\"4\""], @config_with_roles.role(:workers).env_args
+    assert_equal ["-e", "REDIS_URL=redis://a/b", "-e", "WEB_CONCURRENCY=4"], @config_with_roles.role(:workers).env_args
   end
 
   test "env secret overwritten by role" do
@@ -106,8 +106,8 @@ class ConfigurationRoleTest < ActiveSupport::TestCase
     ENV["DB_PASSWORD"] = "secret&\"123"
 
     @config_with_roles.role(:workers).env_args.tap do |env_args|
-      assert_equal ["-e", "REDIS_PASSWORD=\"secret456\"", "-e", "DB_PASSWORD=\"secret&\\\"123\"", "-e", "REDIS_URL=\"redis://a/b\"", "-e", "WEB_CONCURRENCY=\"4\""], Mrsk::Utils.unredacted(env_args)
-      assert_equal ["-e", "REDIS_PASSWORD=[REDACTED]", "-e", "DB_PASSWORD=[REDACTED]", "-e", "REDIS_URL=\"redis://a/b\"", "-e", "WEB_CONCURRENCY=\"4\""], Mrsk::Utils.redacted(env_args)
+      assert_equal ["-e", "REDIS_PASSWORD=secret456", "-e", "DB_PASSWORD=secret\\&\\\"123", "-e", "REDIS_URL=redis://a/b", "-e", "WEB_CONCURRENCY=4"], Mrsk::Utils.unredacted(env_args)
+      assert_equal ["-e", "REDIS_PASSWORD=[REDACTED]", "-e", "DB_PASSWORD=[REDACTED]", "-e", "REDIS_URL=redis://a/b", "-e", "WEB_CONCURRENCY=4"], Mrsk::Utils.redacted(env_args)
     end
   ensure
     ENV["REDIS_PASSWORD"] = nil
@@ -128,8 +128,8 @@ class ConfigurationRoleTest < ActiveSupport::TestCase
     ENV["DB_PASSWORD"] = "secret123"
 
     @config_with_roles.role(:workers).env_args.tap do |env_args|
-      assert_equal ["-e", "DB_PASSWORD=\"secret123\"", "-e", "REDIS_URL=\"redis://a/b\"", "-e", "WEB_CONCURRENCY=\"4\""], Mrsk::Utils.unredacted(env_args)
-      assert_equal ["-e", "DB_PASSWORD=[REDACTED]", "-e", "REDIS_URL=\"redis://a/b\"", "-e", "WEB_CONCURRENCY=\"4\""], Mrsk::Utils.redacted(env_args)
+      assert_equal ["-e", "DB_PASSWORD=secret123", "-e", "REDIS_URL=redis://a/b", "-e", "WEB_CONCURRENCY=4"], Mrsk::Utils.unredacted(env_args)
+      assert_equal ["-e", "DB_PASSWORD=[REDACTED]", "-e", "REDIS_URL=redis://a/b", "-e", "WEB_CONCURRENCY=4"], Mrsk::Utils.redacted(env_args)
     end
   ensure
     ENV["DB_PASSWORD"] = nil
@@ -148,8 +148,8 @@ class ConfigurationRoleTest < ActiveSupport::TestCase
     ENV["REDIS_PASSWORD"] = "secret456"
 
     @config_with_roles.role(:workers).env_args.tap do |env_args|
-      assert_equal ["-e", "REDIS_PASSWORD=\"secret456\"", "-e", "REDIS_URL=\"redis://a/b\"", "-e", "WEB_CONCURRENCY=\"4\""], Mrsk::Utils.unredacted(env_args)
-      assert_equal ["-e", "REDIS_PASSWORD=[REDACTED]", "-e", "REDIS_URL=\"redis://a/b\"", "-e", "WEB_CONCURRENCY=\"4\""], Mrsk::Utils.redacted(env_args)
+      assert_equal ["-e", "REDIS_PASSWORD=secret456", "-e", "REDIS_URL=redis://a/b", "-e", "WEB_CONCURRENCY=4"], Mrsk::Utils.unredacted(env_args)
+      assert_equal ["-e", "REDIS_PASSWORD=[REDACTED]", "-e", "REDIS_URL=redis://a/b", "-e", "WEB_CONCURRENCY=4"], Mrsk::Utils.redacted(env_args)
     end
   ensure
     ENV["REDIS_PASSWORD"] = nil
