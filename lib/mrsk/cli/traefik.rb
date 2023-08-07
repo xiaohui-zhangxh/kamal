@@ -1,7 +1,7 @@
 class Mrsk::Cli::Traefik < Mrsk::Cli::Base
   desc "boot", "Boot Traefik on servers"
   def boot
-    with_lock do
+    mutating do
       on(MRSK.traefik_hosts) do
         execute *MRSK.registry.login
         execute *MRSK.traefik.run, raise_on_non_zero_exit: false
@@ -10,17 +10,22 @@ class Mrsk::Cli::Traefik < Mrsk::Cli::Base
   end
 
   desc "reboot", "Reboot Traefik on servers (stop container, remove container, start new container)"
+  option :rolling, type: :boolean, default: false, desc: "Reboot traefik on hosts in sequence, rather than in parallel"
   def reboot
-    with_lock do
-      stop
-      remove_container
-      boot
+    mutating do
+      on(MRSK.traefik_hosts, in: options[:rolling] ? :sequence : :parallel) do
+        execute *MRSK.auditor.record("Rebooted traefik"), verbosity: :debug
+        execute *MRSK.registry.login
+        execute *MRSK.traefik.stop, raise_on_non_zero_exit: false
+        execute *MRSK.traefik.remove_container
+        execute *MRSK.traefik.run, raise_on_non_zero_exit: false
+      end
     end
   end
 
   desc "start", "Start existing Traefik container on servers"
   def start
-    with_lock do
+    mutating do
       on(MRSK.traefik_hosts) do
         execute *MRSK.auditor.record("Started traefik"), verbosity: :debug
         execute *MRSK.traefik.start, raise_on_non_zero_exit: false
@@ -30,7 +35,7 @@ class Mrsk::Cli::Traefik < Mrsk::Cli::Base
 
   desc "stop", "Stop existing Traefik container on servers"
   def stop
-    with_lock do
+    mutating do
       on(MRSK.traefik_hosts) do
         execute *MRSK.auditor.record("Stopped traefik"), verbosity: :debug
         execute *MRSK.traefik.stop, raise_on_non_zero_exit: false
@@ -40,7 +45,7 @@ class Mrsk::Cli::Traefik < Mrsk::Cli::Base
 
   desc "restart", "Restart existing Traefik container on servers"
   def restart
-    with_lock do
+    mutating do
       stop
       start
     end
@@ -77,7 +82,7 @@ class Mrsk::Cli::Traefik < Mrsk::Cli::Base
 
   desc "remove", "Remove Traefik container and image from servers"
   def remove
-    with_lock do
+    mutating do
       stop
       remove_container
       remove_image
@@ -86,7 +91,7 @@ class Mrsk::Cli::Traefik < Mrsk::Cli::Base
 
   desc "remove_container", "Remove Traefik container from servers", hide: true
   def remove_container
-    with_lock do
+    mutating do
       on(MRSK.traefik_hosts) do
         execute *MRSK.auditor.record("Removed traefik container"), verbosity: :debug
         execute *MRSK.traefik.remove_container
@@ -94,9 +99,9 @@ class Mrsk::Cli::Traefik < Mrsk::Cli::Base
     end
   end
 
-  desc "remove_container", "Remove Traefik image from servers", hide: true
+  desc "remove_image", "Remove Traefik image from servers", hide: true
   def remove_image
-    with_lock do
+    mutating do
       on(MRSK.traefik_hosts) do
         execute *MRSK.auditor.record("Removed traefik image"), verbosity: :debug
         execute *MRSK.traefik.remove_image

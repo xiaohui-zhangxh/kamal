@@ -1,43 +1,64 @@
 require "test_helper"
+require "active_support/testing/time_helpers"
 
 class CommandsAuditorTest < ActiveSupport::TestCase
+  include ActiveSupport::Testing::TimeHelpers
+
   setup do
+    freeze_time
+
     @config = {
-      service: "app", image: "dhh/app", registry: { "username" => "dhh", "password" => "secret" }, servers: [ "1.1.1.1" ],
-      audit_broadcast_cmd: "bin/audit_broadcast"
+      service: "app", image: "dhh/app", registry: { "username" => "dhh", "password" => "secret" }, servers: [ "1.1.1.1" ]
     }
+
+    @auditor = new_command
+    @performer = `whoami`.strip
+    @recorded_at = Time.now.utc.iso8601
   end
 
   test "record" do
-    assert_match \
-      /echo '.* app removed container' >> mrsk-app-audit.log/,
-      new_command.record("app removed container").join(" ")
+    assert_equal [
+      :echo,
+      "[#{@recorded_at}] [#{@performer}]",
+      "app removed container",
+      ">>", "mrsk-app-audit.log"
+    ], @auditor.record("app removed container")
   end
 
   test "record with destination" do
-    @destination = "staging"
-
-    assert_match \
-      /echo '.* app removed container' >> mrsk-app-staging-audit.log/,
-      new_command.record("app removed container").join(" ")
+    new_command(destination: "staging").tap do |auditor|
+      assert_equal [
+        :echo,
+        "[#{@recorded_at}] [#{@performer}] [staging]",
+        "app removed container",
+        ">>", "mrsk-app-staging-audit.log"
+      ], auditor.record("app removed container")
+    end
   end
 
-  test "record with role" do
-    @role = "web"
-
-    assert_match \
-      /echo '.* \[web\] app removed container' >> mrsk-app-audit.log/,
-      new_command.record("app removed container").join(" ")
+  test "record with command details" do
+    new_command(role: "web").tap do |auditor|
+      assert_equal [
+        :echo,
+        "[#{@recorded_at}] [#{@performer}] [web]",
+        "app removed container",
+        ">>", "mrsk-app-audit.log"
+      ], auditor.record("app removed container")
+    end
   end
 
-  test "broadcast" do
-    assert_match \
-      /bin\/audit_broadcast '\[.*\] app removed container'/,
-      new_command.broadcast("app removed container").join(" ")
+  test "record with arg details" do
+    assert_equal [
+      :echo,
+      "[#{@recorded_at}] [#{@performer}] [value]",
+      "app removed container",
+      ">>", "mrsk-app-audit.log"
+    ], @auditor.record("app removed container", detail: "value")
   end
+
 
   private
-    def new_command
-      Mrsk::Commands::Auditor.new(Mrsk::Configuration.new(@config, destination: @destination, version: "123"), role: @role)
+    def new_command(destination: nil, **details)
+      Mrsk::Commands::Auditor.new(Mrsk::Configuration.new(@config, destination: destination, version: "123"), **details)
     end
 end

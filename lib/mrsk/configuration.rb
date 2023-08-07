@@ -6,7 +6,7 @@ require "erb"
 require "net/ssh/proxy/jump"
 
 class Mrsk::Configuration
-  delegate :service, :image, :servers, :env, :labels, :registry, :builder, :stop_wait_time, to: :raw_config, allow_nil: true
+  delegate :service, :image, :servers, :env, :labels, :registry, :stop_wait_time, :hooks_path, to: :raw_config, allow_nil: true
   delegate :argumentize, :argumentize_env_with_secrets, :optionize, to: Mrsk::Utils
 
   attr_accessor :destination
@@ -50,7 +50,7 @@ class Mrsk::Configuration
   end
 
   def version
-    @declared_version.presence || ENV["VERSION"] || current_commit_hash
+    @declared_version.presence || ENV["VERSION"] || git_version
   end
 
   def abbreviated_version
@@ -85,6 +85,10 @@ class Mrsk::Configuration
 
   def traefik_hosts
     roles.select(&:running_traefik?).flat_map(&:hosts).uniq
+  end
+
+  def boot
+    Mrsk::Configuration::Boot.new(config: self)
   end
 
 
@@ -153,10 +157,6 @@ class Mrsk::Configuration
   end
 
 
-  def audit_broadcast_cmd
-    raw_config.audit_broadcast_cmd
-  end
-
   def healthcheck
     { "path" => "/up", "port" => 3000, "max_attempts" => 7 }.merge(raw_config.healthcheck || {})
   end
@@ -165,8 +165,12 @@ class Mrsk::Configuration
     raw_config.readiness_delay || 7
   end
 
+  def minimum_version
+    raw_config.minimum_version
+  end
+
   def valid?
-    ensure_required_keys_present && ensure_env_available
+    ensure_required_keys_present && ensure_valid_mrsk_version
   end
 
 
@@ -182,7 +186,7 @@ class Mrsk::Configuration
       env_args: env_args,
       volume_args: volume_args,
       ssh_options: ssh_options,
-      builder: raw_config.builder,
+      builder: builder.to_h,
       accessories: raw_config.accessories,
       logging: logging_args,
       healthcheck: healthcheck
@@ -191,6 +195,22 @@ class Mrsk::Configuration
 
   def traefik
     raw_config.traefik || {}
+  end
+
+  def hooks_path
+    raw_config.hooks_path || ".mrsk/hooks"
+  end
+
+  def builder
+    Mrsk::Configuration::Builder.new(config: self)
+  end
+
+  # Will raise KeyError if any secret ENVs are missing
+  def ensure_env_available
+    env_args
+    roles.each(&:env_args)
+
+    true
   end
 
   private
@@ -217,22 +237,25 @@ class Mrsk::Configuration
       true
     end
 
-    # Will raise KeyError if any secret ENVs are missing
-    def ensure_env_available
-      env_args
-      roles.each(&:env_args)
+    def ensure_valid_mrsk_version
+      if minimum_version && Gem::Version.new(minimum_version) > Gem::Version.new(Mrsk::VERSION)
+        raise ArgumentError, "Current version is #{Mrsk::VERSION}, minimum required is #{minimum_version}"
+      end
 
       true
     end
+
 
     def role_names
       raw_config.servers.is_a?(Array) ? [ "web" ] : raw_config.servers.keys.sort
     end
 
-    def current_commit_hash
-      @current_commit_hash ||=
+    def git_version
+      @git_version ||=
         if system("git rev-parse")
-          `git rev-parse HEAD`.strip
+          uncommitted_suffix = Mrsk::Utils.uncommitted_changes.present? ? "_uncommitted_#{SecureRandom.hex(8)}" : ""
+
+          "#{`git rev-parse HEAD`.strip}#{uncommitted_suffix}"
         else
           raise "Can't use commit hash as version, no git repository found in #{Dir.pwd}"
         end

@@ -2,16 +2,16 @@ class Mrsk::Cli::Lock < Mrsk::Cli::Base
   desc "status", "Report lock status"
   def status
     handle_missing_lock do
-      on(MRSK.primary_host) { puts capture_with_info(*MRSK.lock.status) }
+      on(MRSK.primary_host) { puts capture_with_debug(*MRSK.lock.status) }
     end
   end
 
   desc "acquire", "Acquire the deploy lock"
-  option :message, aliases: "-m", type: :string, desc: "A lock mesasge", required: true
+  option :message, aliases: "-m", type: :string, desc: "A lock message", required: true
   def acquire
     message = options[:message]
-    handle_missing_lock do
-      on(MRSK.primary_host) { execute *MRSK.lock.acquire(message, MRSK.config.version) }
+    raise_if_locked do
+      on(MRSK.primary_host) { execute *MRSK.lock.acquire(message, MRSK.config.version), verbosity: :debug }
       say "Acquired the deploy lock"
     end
   end
@@ -19,7 +19,7 @@ class Mrsk::Cli::Lock < Mrsk::Cli::Base
   desc "release", "Release the deploy lock"
   def release
     handle_missing_lock do
-      on(MRSK.primary_host) { execute *MRSK.lock.release }
+      on(MRSK.primary_host) { execute *MRSK.lock.release, verbosity: :debug }
       say "Released the deploy lock"
     end
   end

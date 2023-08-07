@@ -44,30 +44,48 @@ Then edit your `.env` file to add your registry password as `MRSK_REGISTRY_PASSW
 Now you're ready to deploy to the servers:
 
 ```
-mrsk deploy
+mrsk setup
 ```
 
 This will:
 
 1. Connect to the servers over SSH (using root by default, authenticated by your ssh key)
-2. Install Docker on any server that might be missing it (using apt-get): root access is needed via ssh for this.
+2. Install Docker and curl on any server that might be missing it (using apt-get): root access is needed via ssh for this.
 3. Log into the registry both locally and remotely
 4. Build the image using the standard Dockerfile in the root of the application.
 5. Push the image to the registry.
 6. Pull the image from the registry onto the servers.
 7. Ensure Traefik is running and accepting traffic on port 80.
-8. Ensure your app responds with `200 OK` to `GET /up`.
+8. Ensure your app responds with `200 OK` to `GET /up` (you must have curl installed inside your app image!).
 9. Start a new container with the version of the app that matches the current git version hash.
 10. Stop the old container running the previous version of the app.
 11. Prune unused images and stopped containers to ensure servers don't fill up.
 
-Voila! All the servers are now serving the app on port 80. If you're just running a single server, you're ready to go. If you're running multiple servers, you need to put a load balancer in front of them.
+Voila! All the servers are now serving the app on port 80. If you're just running a single server, you're ready to go. If you're running multiple servers, you need to put a load balancer in front of them. For subsequent deploys, or if your servers already have Docker and curl installed, you can just run `mrsk deploy`.
+
+### Rails <7 usage
+
+MRSK is not needed to be in your application Gemfile to be used. However, if you want to guarantee specific MRSK version in your CI/CD workflows, you can create a separate Gemfile for MRSK, for example, `gemfile/mrsk.gemfile`:
+
+```ruby
+source 'https://rubygems.org'
+
+gem 'mrsk', '~> 0.14'
+```
+
+Bundle with `BUNDLE_GEMFILE=gemfiles/mrsk.gemfile bundle`.
+
+After this MRSK can be used for deployment:
+
+```sh
+BUNDLE_GEMFILE=gemfiles/mrsk.gemfile bundle exec mrsk deploy
+```
 
 ## Vision
 
 In the past decade+, there's been an explosion in commercial offerings that make deploying web apps easier. Heroku kicked it off with an incredible offering that stayed ahead of the competition seemingly forever. These days we have excellent alternatives like Fly.io and Render. And hosted Kubernetes is making things easier too on AWS, GCP, Digital Ocean, and elsewhere. But these are all offerings that have you renting computers in the cloud at a premium. If you want to run on your own hardware, or even just have a clear migration path to do so in the future, you need to carefully consider how locked in you get to these commercial platforms. Preferably before the bills swallow your business whole!
 
-MRSK seeks to bring the advance in ergonomics pioneered by these commercial offerings to deploying web apps anywhere. Whether that's low-cost cloud options without the managed-service markup from the likes of Digital Ocean, Hetzner, OVH, etc, or it's your own colocated bare metal. To MRSK, it's all the same. Feed the config file a list of IP addresses with vanilla Ubuntu servers that have seen no prep beyond an added SSH key, and you'll be running in literally minutes.
+MRSK seeks to bring the advance in ergonomics pioneered by these commercial offerings to deploying web apps anywhere. Whether that's low-cost cloud options without the managed-service markup from the likes of Digital Ocean, Hetzner, OVH, etc., or it's your own colocated bare metal. To MRSK, it's all the same. Feed the config file a list of IP addresses with vanilla Ubuntu servers that have seen no prep beyond an added SSH key, and you'll be running in literally minutes.
 
 This approach gives you enormous portability. You can have your web app deployed on several clouds at ease like this. Or you can buy the baseline with your own hardware, then deploy to a cloud before a big seasonal spike to get more capacity. When you're not locked into a single provider from a tooling perspective, there are a lot of compelling options available.
 
@@ -136,6 +154,8 @@ This template can safely be checked into git. Then everyone deploying the app ca
 
 If you need separate env variables for different destinations, you can set them with `.env.destination.erb` for the template, which will generate `.env.staging` when run with `mrsk envify -d staging`.
 
+Note: If you utilize biometrics with 1Password you can remove the `session_token` related parts in the example and just call `op read op://Vault/Docker Hub/password -n`.
+
 #### Bitwarden as a secret store
 
 If you are using open source secret store like bitwarden, you can create `.env.erb` as a template which looks up the secrets.
@@ -197,6 +217,19 @@ registry:
 
 A reference to secret `DOCKER_REGISTRY_TOKEN` will look for `ENV["DOCKER_REGISTRY_TOKEN"]` on the machine running MRSK.
 
+#### Using AWS ECR as the container registry
+
+AWS ECR's access token is only valid for 12hrs. In order to not have to manually regenerate the token every time, you can use ERB in the `deploy.yml` file to shell out to the `aws` cli command, and obtain the token:
+
+```yaml
+registry:
+  server: <your aws account id>.dkr.ecr.<your aws region id>.amazonaws.com
+  username: AWS
+  password: <%= %x(aws ecr get-login-password) %>
+```
+
+You will need to have the `aws` CLI installed locally for this to work.
+
 ### Using a different SSH user than root
 
 The default SSH user is root, but you can change it using `ssh/user`:
@@ -206,13 +239,13 @@ ssh:
   user: app
 ```
 
-If you are using non-root user, you need to bootstrap your servers manually, before using them with MRSK. On Ubuntu, you'd do:
+If you are using non-root user (`app` as above example), you need to bootstrap your servers manually, before using them with MRSK. On Ubuntu, you'd do:
 
 ```bash
 sudo apt update
 sudo apt upgrade -y
 sudo apt install -y docker.io curl git
-sudo usermod -a -G docker ubuntu
+sudo usermod -a -G docker app
 ```
 
 ### Using a proxy SSH host
@@ -321,7 +354,7 @@ You can specialize the default Traefik rules by setting labels on the containers
 labels:
   traefik.http.routers.hey-web.rule: Host(`app.hey.com`)
 ```
-Traefik rules are in the "service-role-destination" format. The default role will be `web` if no rule is specified. If the destination is not specified, it is not included. To give an example, the above rule would become "traefik.http.routers.hey-web.rule" if it was for the "staging" destination.
+Traefik rules are in the "service-role-destination" format. The default role will be `web` if no rule is specified. If the destination is not specified, it is not included. To give an example, the above rule would become "traefik.http.routers.hey-web-staging.rule" if it was for the "staging" destination.
 
 Note: The backticks are needed to ensure the rule is passed in correctly and not treated as command substitution by Bash!
 
@@ -379,6 +412,16 @@ servers:
 ```
 
 That'll start the job containers with `docker run ... --cap-add --cpu-count 4 ...`.
+
+### Setting a minimum version
+
+You can set the minimum MRSK version with:
+
+```yaml
+minimum_version: 0.13.3
+```
+
+Note: versions <= 0.13.2 will ignore this setting.
 
 ### Configuring logging
 
@@ -463,6 +506,37 @@ builder:
   context: ".."
 ```
 
+### Using multistage builder cache
+
+Docker multistage build cache can singlehandedly speed up your builds by a lot. Currently MRSK only supports using the GHA cache or the Registry cache:
+
+```yaml
+# Using GHA cache
+builder:
+  cache:
+    type: gha
+
+# Using Registry cache
+builder:
+  cache:
+    type: registry
+
+# Using Registry cache with different cache image
+builder:
+  cache:
+    type: registry
+    # default image name is <image>-build-cache
+    image: application-cache-image
+
+# Using Registry cache with additinonal cache-to options
+builder:
+  cache:
+    type: registry
+    options: mode=max,image-manifest=true,oci-mediatypes=true
+```
+
+For further insights into build cache optimization, check out documentation on Docker's official website: https://docs.docker.com/build/cache/.
+
 ### Using build secrets for new images
 
 Some images need a secret passed in during build time, like a GITHUB_TOKEN, to give access to private gem repositories. This can be done by having the secret in ENV, then referencing it in the builder configuration:
@@ -535,7 +609,7 @@ traefik:
   options:
     publish:
       - 8080:8080
-    volumes:
+    volume:
       - /tmp/example.json:/tmp/example.json
     memory: 512m
 ```
@@ -580,6 +654,16 @@ traefik:
     entrypoints.web.address: ':80'
     entrypoints.otherentrypoint.address: ':9000'
 ```
+
+### Rebooting Traefik
+
+If you make changes to Traefik args or labels, you'll need to reboot with:
+
+`mrsk traefik reboot`
+
+In production, reboot the Traefik containers one by one with a slower but safer approach, using a rolling reboot:
+
+`mrsk traefik reboot --rolling`
 
 ### Configuring build args for new images
 
@@ -668,42 +752,45 @@ servers:
 
 This assumes the Cron settings are stored in `config/crontab`.
 
-### Using audit broadcasts
+### Healthcheck
 
-If you'd like to broadcast audits of deploys, rollbacks, etc to a chatroom or elsewhere, you can configure the `audit_broadcast_cmd` setting with the path to a bin file that will be passed the audit line as the first argument:
+MRSK uses Docker healthchecks to check the health of your application during deployment. Traefik uses this same healthcheck status to determine when a container is ready to receive traffic.
 
-```yaml
-audit_broadcast_cmd:
-  bin/audit_broadcast
-```
-
-The broadcast command could look something like:
-
-```bash
-#!/usr/bin/env bash
-curl -q -d content="[My App] ${1}" https://3.basecamp.com/XXXXX/integrations/XXXXX/buckets/XXXXX/chats/XXXXX/lines
-```
-
-That'll post a line like follows to a preconfigured chatbot in Basecamp:
-
-```
-[My App] [dhh] Rolled back to version d264c4e92470ad1bd18590f04466787262f605de
-```
-
-### Custom healthcheck
-
-MRSK defaults to checking the health of your application again `/up` on port 3000 up to 7 times. You can tailor the behaviour with the `healthcheck` setting:
+The healthcheck defaults to testing the HTTP response to the path `/up` on port 3000, up to 7 times. You can tailor this behaviour with the `healthcheck` setting:
 
 ```yaml
 healthcheck:
   path: /healthz
   port: 4000
   max_attempts: 7
+  interval: 20s
 ```
 
 This will ensure your application is configured with a traefik label for the healthcheck against `/healthz` and that the pre-deploy healthcheck that MRSK performs is done against the same path on port 4000.
 
-The healthcheck also allows for an optional `max_attempts` setting, which will attempt the healthcheck up to the specified number of times before failing the deploy. This is useful for applications that take a while to start up. The default is 7.
+You can also specify a custom healthcheck command, which is useful for non-HTTP services:
+
+```yaml
+healthcheck:
+  cmd: /bin/check_health
+```
+
+The top-level healthcheck configuration applies to all services that use
+Traefik, by default. You can also specialize the configuration at the role
+level:
+
+```yaml
+servers:
+  job:
+    hosts: ...
+    cmd: bin/jobs
+    healthcheck:
+      cmd: bin/check
+```
+
+The healthcheck allows for an optional `max_attempts` setting, which will attempt the healthcheck up to the specified number of times before failing the deploy. This is useful for applications that take a while to start up. The default is 7.
+
+Note: The HTTP health checks assume that the `curl` command is available inside the container. If that's not the case, use the healthcheck's `cmd` option to specify an alternative check that the container supports.
 
 ## Commands
 
@@ -822,7 +909,7 @@ If you wish to remove the entire application, including Traefik, containers, ima
 
 ## Locking
 
-Commands that are unsafe to run concurrently will take a deploy lock while they run. The lock is the `mrsk_lock` directory on the primary server.
+Commands that are unsafe to run concurrently will take a deploy lock while they run. The lock is the `mrsk_lock-<service>` directory on the primary server.
 
 You can check the lock status with:
 
@@ -837,12 +924,84 @@ Message: Automatic deploy lock
 You can also manually acquire and release the lock
 
 ```
-mrsk lock acquire -m "Doing maintanence"
+mrsk lock acquire -m "Doing maintenance"
 ```
 
 ```
 mrsk lock release
 ```
+
+## Rolling deployments
+
+When deploying to large numbers of hosts, you might prefer not to restart your services on every host at the same time.
+
+MRSK's default is to boot new containers on all hosts in parallel. But you can control this by configuring `boot/limit` and `boot/wait` as options:
+
+```yaml
+service: myservice
+
+boot:
+  limit: 10 # Can also specify as a percentage of total hosts, such as "25%"
+  wait: 2
+```
+
+When `limit` is specified, containers will be booted on, at most, `limit` hosts at once. MRSK will pause for `wait` seconds between batches.
+
+These settings only apply when booting containers (using `mrsk deploy`, or `mrsk app boot`). For other commands, MRSK continues to run commands in parallel across all hosts.
+
+## Hooks
+
+You can run custom scripts at specific points with hooks.
+
+Hooks should be stored in the .mrsk/hooks folder. Running mrsk init will build that folder and add some sample scripts.
+
+You can change their location by setting `hooks_path` in the configuration file.
+
+If the script returns a non-zero exit code the command will be aborted.
+
+`MRSK_*` environment variables are available to the hooks command for
+fine-grained audit reporting, e.g. for triggering deployment reports or
+firing a JSON webhook. These variables include:
+- `MRSK_RECORDED_AT` - UTC timestamp in ISO 8601 format, e.g. `2023-04-14T17:07:31Z`
+- `MRSK_PERFORMER` - the local user performing the command (from `whoami`)
+- `MRSK_SERVICE_VERSION` - an abbreviated service and version for use in messages, e.g. app@150b24f
+- `MRSK_VERSION` - the full version being deployed
+- `MRSK_HOSTS` - a comma-separated list of the hosts targeted by the command
+- `MRSK_COMMAND` - The command we are running
+- `MRSK_SUBCOMMAND` - optional: The subcommand we are running
+- `MRSK_DESTINATION` - optional: destination, e.g. "staging"
+- `MRSK_ROLE` - optional: role targeted, e.g. "web"
+
+There are four hooks:
+
+1. pre-connect
+Called before taking the deploy lock. For checks that need to run before connecting to remote hosts - e.g. DNS warming.
+
+2. pre-build
+Used for pre-build checks - e.g. there are no uncommitted changes or that CI has passed.
+
+3. pre-deploy
+For final checks before deploying, e.g. checking CI completed
+
+3. post-deploy - run after a deploy, redeploy or rollback.
+This hook is also passed a `MRSK_RUNTIME` env variable set to the total seconds the deploy took.
+
+This could be used to broadcast a deployment message, or register the new version with an APM.
+
+The command could look something like:
+
+```bash
+#!/usr/bin/env bash
+curl -q -d content="[My App] ${MRSK_PERFORMER} Rolled back to version ${MRSK_VERSION}" https://3.basecamp.com/XXXXX/integrations/XXXXX/buckets/XXXXX/chats/XXXXX/lines
+```
+
+That'll post a line like the following to a preconfigured chatbot in Basecamp:
+
+```
+[My App] [dhh] Rolled back to version d264c4e92470ad1bd18590f04466787262f605de
+```
+
+Set `--skip_hooks` to avoid running the hooks.
 
 ## Stage of development
 

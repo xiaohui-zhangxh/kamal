@@ -1,35 +1,40 @@
 class Mrsk::Cli::App < Mrsk::Cli::Base
   desc "boot", "Boot app on servers (or reboot app if already running)"
   def boot
-    with_lock do
-      say "Get most recent version available as an image...", :magenta unless options[:version]
-      using_version(version_or_latest) do |version|
-        say "Start container with version #{version} using a #{MRSK.config.readiness_delay}s readiness delay (or reboot if already running)...", :magenta
+    mutating do
+      hold_lock_on_error do
+        say "Get most recent version available as an image...", :magenta unless options[:version]
+        using_version(version_or_latest) do |version|
+          say "Start container with version #{version} using a #{MRSK.config.readiness_delay}s readiness delay (or reboot if already running)...", :magenta
 
-        cli = self
+          on(MRSK.hosts) do
+            execute *MRSK.auditor.record("Tagging #{MRSK.config.absolute_image} as the latest image"), verbosity: :debug
+            execute *MRSK.app.tag_current_as_latest
+          end
 
-        on(MRSK.hosts) do
-          execute *MRSK.auditor.record("Tagging #{MRSK.config.absolute_image} as the latest image"), verbosity: :debug
-          execute *MRSK.app.tag_current_as_latest
-        end
+          on(MRSK.hosts, **MRSK.boot_strategy) do |host|
+            roles = MRSK.roles_on(host)
 
-        on(MRSK.hosts) do |host|
-          roles = MRSK.roles_on(host)
+            roles.each do |role|
+              app = MRSK.app(role: role)
+              auditor = MRSK.auditor(role: role)
 
-          roles.each do |role|
-            execute *MRSK.auditor(role: role).record("Booted app version #{version}"), verbosity: :debug
+              if capture_with_info(*app.container_id_for_version(version, only_running: true), raise_on_non_zero_exit: false).present?
+                tmp_version = "#{version}_replaced_#{SecureRandom.hex(8)}"
+                info "Renaming container #{version} to #{tmp_version} as already deployed on #{host}"
+                execute *auditor.record("Renaming container #{version} to #{tmp_version}"), verbosity: :debug
+                execute *app.rename_container(version: version, new_version: tmp_version)
+              end
 
-            if capture_with_info(*MRSK.app(role: role).container_id_for_version(version), raise_on_non_zero_exit: false).present?
-              tmp_version = "#{version}_#{SecureRandom.hex(8)}"
-              info "Renaming container #{version} to #{tmp_version} as already deployed on #{host}"
-              execute *MRSK.auditor(role: role).record("Renaming container #{version} to #{tmp_version}"), verbosity: :debug
-              execute *MRSK.app(role: role).rename_container(version: version, new_version: tmp_version)
+              execute *auditor.record("Booted app version #{version}"), verbosity: :debug
+
+              old_version = capture_with_info(*app.current_running_version, raise_on_non_zero_exit: false).strip
+              execute *app.start_or_run(hostname: "#{host}-#{SecureRandom.hex(6)}")
+
+              Mrsk::Utils::HealthcheckPoller.wait_for_healthy(pause_after_ready: true) { capture_with_info(*app.status(version: version)) }
+
+              execute *app.stop(version: old_version), raise_on_non_zero_exit: false if old_version.present?
             end
-
-            old_version = capture_with_info(*MRSK.app(role: role).current_running_version, raise_on_non_zero_exit: false).strip
-            execute *MRSK.app(role: role).run
-            sleep MRSK.config.readiness_delay
-            execute *MRSK.app(role: role).stop(version: old_version), raise_on_non_zero_exit: false if old_version.present?
           end
         end
       end
@@ -38,7 +43,7 @@ class Mrsk::Cli::App < Mrsk::Cli::Base
 
   desc "start", "Start existing app container on servers"
   def start
-    with_lock do
+    mutating do
       on(MRSK.hosts) do |host|
         roles = MRSK.roles_on(host)
 
@@ -52,12 +57,12 @@ class Mrsk::Cli::App < Mrsk::Cli::Base
 
   desc "stop", "Stop app container on servers"
   def stop
-    with_lock do
+    mutating do
       on(MRSK.hosts) do |host|
         roles = MRSK.roles_on(host)
 
         roles.each do |role|
-          execute *MRSK.auditor(role: role).record("Stopped app"), verbosity: :debug
+          execute *MRSK.auditor.record("Stopped app", role: role), verbosity: :debug
           execute *MRSK.app(role: role).stop, raise_on_non_zero_exit: false
         end
       end
@@ -104,7 +109,7 @@ class Mrsk::Cli::App < Mrsk::Cli::Base
           roles = MRSK.roles_on(host)
 
           roles.each do |role|
-            execute *MRSK.auditor(role: role).record("Executed cmd '#{cmd}' on app version #{version}"), verbosity: :debug
+            execute *MRSK.auditor.record("Executed cmd '#{cmd}' on app version #{version}", role: role), verbosity: :debug
             puts_by_host host, capture_with_info(*MRSK.app(role: role).execute_in_existing_container(cmd))
           end
         end
@@ -130,7 +135,7 @@ class Mrsk::Cli::App < Mrsk::Cli::Base
   desc "stale_containers", "Detect app stale containers"
   option :stop, aliases: "-s", type: :boolean, default: false, desc: "Stop the stale containers found"
   def stale_containers
-    with_lock do
+    mutating do
       stop = options[:stop]
 
       cli = self
@@ -197,7 +202,7 @@ class Mrsk::Cli::App < Mrsk::Cli::Base
 
   desc "remove", "Remove app containers and images from servers"
   def remove
-    with_lock do
+    mutating do
       stop
       remove_containers
       remove_images
@@ -206,12 +211,12 @@ class Mrsk::Cli::App < Mrsk::Cli::Base
 
   desc "remove_container [VERSION]", "Remove app container with given version from servers", hide: true
   def remove_container(version)
-    with_lock do
+    mutating do
       on(MRSK.hosts) do |host|
         roles = MRSK.roles_on(host)
 
         roles.each do |role|
-          execute *MRSK.auditor(role: role).record("Removed app container with version #{version}"), verbosity: :debug
+          execute *MRSK.auditor.record("Removed app container with version #{version}", role: role), verbosity: :debug
           execute *MRSK.app(role: role).remove_container(version: version)
         end
       end
@@ -220,12 +225,12 @@ class Mrsk::Cli::App < Mrsk::Cli::Base
 
   desc "remove_containers", "Remove all app containers from servers", hide: true
   def remove_containers
-    with_lock do
+    mutating do
       on(MRSK.hosts) do |host|
         roles = MRSK.roles_on(host)
 
         roles.each do |role|
-          execute *MRSK.auditor(role: role).record("Removed all app containers"), verbosity: :debug
+          execute *MRSK.auditor.record("Removed all app containers", role: role), verbosity: :debug
           execute *MRSK.app(role: role).remove_containers
         end
       end
@@ -234,7 +239,7 @@ class Mrsk::Cli::App < Mrsk::Cli::Base
 
   desc "remove_images", "Remove all app images from servers", hide: true
   def remove_images
-    with_lock do
+    mutating do
       on(MRSK.hosts) do
         execute *MRSK.auditor.record("Removed all app images"), verbosity: :debug
         execute *MRSK.app.remove_images

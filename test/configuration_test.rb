@@ -48,7 +48,7 @@ class ConfigurationTest < ActiveSupport::TestCase
   end
 
   test "role" do
-    assert_equal "web", @config.role(:web).name
+    assert @config.role(:web).name.web?
     assert_equal "workers", @config_with_roles.role(:workers).name
     assert_nil @config.role(:missing)
   end
@@ -72,19 +72,36 @@ class ConfigurationTest < ActiveSupport::TestCase
     assert_equal [ "1.1.1.1", "1.1.1.2", "1.1.1.3" ], config.traefik_hosts
   end
 
-  test "version" do
+  test "version no git repo" do
     ENV.delete("VERSION")
 
     @config.expects(:system).with("git rev-parse").returns(nil)
     error = assert_raises(RuntimeError) { @config.version}
     assert_match /no git repository found/, error.message
+  end
 
-    @config.expects(:current_commit_hash).returns("git-version")
+  test "version from git committed" do
+    ENV.delete("VERSION")
+
+    @config.expects(:`).with("git rev-parse HEAD").returns("git-version")
+    Mrsk::Utils.expects(:uncommitted_changes).returns("")
     assert_equal "git-version", @config.version
+  end
 
+  test "version from git uncommitted" do
+    ENV.delete("VERSION")
+
+    @config.expects(:`).with("git rev-parse HEAD").returns("git-version")
+    Mrsk::Utils.expects(:uncommitted_changes).returns("M   file\n")
+    assert_match /^git-version_uncommitted_[0-9a-f]{16}$/, @config.version
+  end
+
+  test "version from env" do
     ENV["VERSION"] = "env-version"
     assert_equal "env-version", @config.version
+  end
 
+  test "version from arg" do
     @config.version = "arg-version"
     assert_equal "arg-version", @config.version
   end
@@ -149,7 +166,7 @@ class ConfigurationTest < ActiveSupport::TestCase
     assert_raises(KeyError) do
       config = Mrsk::Configuration.new(@deploy.tap { |c| c.merge!({
         env: { "secret" => [ "PASSWORD" ] }
-      }) })
+      }) }).ensure_env_available
     end
   end
 
@@ -249,6 +266,22 @@ class ConfigurationTest < ActiveSupport::TestCase
   end
 
   test "to_h" do
-    assert_equal({ :roles=>["web"], :hosts=>["1.1.1.1", "1.1.1.2"], :primary_host=>"1.1.1.1", :version=>"missing", :repository=>"dhh/app", :absolute_image=>"dhh/app:missing", :service_with_version=>"app-missing", :env_args=>["-e", "REDIS_URL=\"redis://x/y\""], :ssh_options=>{:user=>"root", :auth_methods=>["publickey"]}, :volume_args=>["--volume", "/local/path:/container/path"], :logging=>["--log-opt", "max-size=\"10m\""], :healthcheck=>{"path"=>"/up", "port"=>3000, "max_attempts" => 7 }}, @config.to_h)
+    assert_equal({ :roles=>["web"], :hosts=>["1.1.1.1", "1.1.1.2"], :primary_host=>"1.1.1.1", :version=>"missing", :repository=>"dhh/app", :absolute_image=>"dhh/app:missing", :service_with_version=>"app-missing", :env_args=>["-e", "REDIS_URL=\"redis://x/y\""], :ssh_options=>{:user=>"root", :auth_methods=>["publickey"]}, :volume_args=>["--volume", "/local/path:/container/path"], :builder=>{}, :logging=>["--log-opt", "max-size=\"10m\""], :healthcheck=>{"path"=>"/up", "port"=>3000, "max_attempts" => 7 }}, @config.to_h)
+  end
+
+  test "min version is lower" do
+    config = Mrsk::Configuration.new(@deploy.tap { |c| c.merge!(minimum_version: "0.0.1") })
+    assert_equal "0.0.1", config.minimum_version
+  end
+
+  test "min version is equal" do
+    config = Mrsk::Configuration.new(@deploy.tap { |c| c.merge!(minimum_version: Mrsk::VERSION) })
+    assert_equal Mrsk::VERSION, config.minimum_version
+  end
+
+  test "min version is higher" do
+    assert_raises(ArgumentError) do
+      Mrsk::Configuration.new(@deploy.tap { |c| c.merge!(minimum_version: "10000.0.0") })
+    end
   end
 end

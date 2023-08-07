@@ -1,5 +1,5 @@
 require "active_support/duration"
-require "active_support/core_ext/numeric/time"
+require "time"
 
 class Mrsk::Commands::Lock < Mrsk::Commands::Base
   def acquire(message, version)
@@ -40,7 +40,7 @@ class Mrsk::Commands::Lock < Mrsk::Commands::Base
     end
 
     def lock_dir
-      :mrsk_lock
+      "mrsk_lock-#{config.service}"
     end
 
     def lock_details_file
@@ -49,7 +49,7 @@ class Mrsk::Commands::Lock < Mrsk::Commands::Base
 
     def lock_details(message, version)
       <<~DETAILS.strip
-        Locked by: #{locked_by} at #{Time.now.gmtime}
+        Locked by: #{locked_by} at #{Time.now.utc.iso8601}
         Version: #{version}
         Message: #{message}
       DETAILS

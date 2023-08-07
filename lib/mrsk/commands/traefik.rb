@@ -1,8 +1,11 @@
 class Mrsk::Commands::Traefik < Mrsk::Commands::Base
-  delegate :argumentize, :optionize, to: Mrsk::Utils
+  delegate :argumentize, :argumentize_env_with_secrets, :optionize, to: Mrsk::Utils
 
   DEFAULT_IMAGE = "traefik:v2.9"
   CONTAINER_PORT = 80
+  DEFAULT_ARGS = {
+    'log.level' => 'DEBUG'
+  }
 
   def run
     docker :run, "--name traefik",
@@ -10,12 +13,12 @@ class Mrsk::Commands::Traefik < Mrsk::Commands::Base
       "--restart", "unless-stopped",
       "--publish", port,
       "--volume", "/var/run/docker.sock:/var/run/docker.sock",
+      *env_args,
       *config.logging_args,
       *label_args,
       *docker_options_args,
       image,
       "--providers.docker",
-      "--log.level=DEBUG",
       *cmd_option_args
   end
 
@@ -61,6 +64,16 @@ class Mrsk::Commands::Traefik < Mrsk::Commands::Base
       argumentize "--label", labels
     end
 
+    def env_args
+      env_config = config.traefik["env"] || {}
+
+      if env_config.present?
+        argumentize_env_with_secrets(env_config)
+      else
+        []
+      end
+    end
+
     def labels
       config.traefik["labels"] || []
     end
@@ -75,9 +88,9 @@ class Mrsk::Commands::Traefik < Mrsk::Commands::Base
 
     def cmd_option_args
       if args = config.traefik["args"]
-        optionize args, with: "="
+        optionize DEFAULT_ARGS.merge(args), with: "="
       else
-        []
+        optionize DEFAULT_ARGS, with: "="
       end
     end
 

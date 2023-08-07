@@ -1,5 +1,9 @@
+
 class Mrsk::Commands::Builder::Base < Mrsk::Commands::Base
+  class BuilderError < StandardError; end
+
   delegate :argumentize, to: Mrsk::Utils
+  delegate :args, :secrets, :dockerfile, :local_arch, :local_host, :remote_arch, :remote_host, :cache_from, :cache_to, to: :builder_config
 
   def clean
     docker :image, :rm, "--force", config.absolute_image
@@ -10,16 +14,24 @@ class Mrsk::Commands::Builder::Base < Mrsk::Commands::Base
   end
 
   def build_options
-    [ *build_tags, *build_labels, *build_args, *build_secrets, *build_dockerfile ]
+    [ *build_tags, *build_cache, *build_labels, *build_args, *build_secrets, *build_dockerfile ]
   end
 
   def build_context
-    context
+    config.builder.context
   end
+
 
   private
     def build_tags
       [ "-t", config.absolute_image, "-t", config.latest_image ]
+    end
+
+    def build_cache
+      if cache_to && cache_from
+        ["--cache-to", cache_to,
+          "--cache-from", cache_from]
+      end
     end
 
     def build_labels
@@ -35,22 +47,14 @@ class Mrsk::Commands::Builder::Base < Mrsk::Commands::Base
     end
 
     def build_dockerfile
-      argumentize "--file", dockerfile
+      if Pathname.new(File.expand_path(dockerfile)).exist?
+        argumentize "--file", dockerfile
+      else
+        raise BuilderError, "Missing #{dockerfile}"
+      end
     end
 
-    def args
-      (config.builder && config.builder["args"]) || {}
-    end
-
-    def secrets
-      (config.builder && config.builder["secrets"]) || []
-    end
-
-    def dockerfile
-      (config.builder && config.builder["dockerfile"]) || "Dockerfile"
-    end
-
-    def context
-      (config.builder && config.builder["context"]) || "."
+    def builder_config
+      config.builder
     end
 end

@@ -1,9 +1,5 @@
 #!/bin/bash
 
-cd /mrsk && gem build mrsk.gemspec -o /tmp/mrsk.gem && gem install /tmp/mrsk.gem
+dockerd --max-concurrent-downloads 1 &
 
-dockerd &
-
-trap "pkill -f sleep" term
-
-sleep infinity & wait
+exec sleep infinity

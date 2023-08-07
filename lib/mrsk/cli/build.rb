@@ -1,7 +1,9 @@
 class Mrsk::Cli::Build < Mrsk::Cli::Base
+  class BuildError < StandardError; end
+
   desc "deliver", "Build app and push app image to registry then pull image on servers"
   def deliver
-    with_lock do
+    mutating do
       push
       pull
     end
@@ -9,12 +11,21 @@ class Mrsk::Cli::Build < Mrsk::Cli::Base
 
   desc "push", "Build and push app image to registry"
   def push
-    with_lock do
+    mutating do
       cli = self
+
+      verify_local_dependencies
+      run_hook "pre-build"
+
+      if (uncommitted_changes = Mrsk::Utils.uncommitted_changes).present?
+        say "The following paths have uncommitted changes:\n #{uncommitted_changes}", :yellow
+      end
 
       run_locally do
         begin
-          MRSK.with_verbosity(:debug) { execute *MRSK.builder.push }
+          MRSK.with_verbosity(:debug) do
+            execute *MRSK.builder.push
+          end
         rescue SSHKit::Command::Failed => e
           if e.message =~ /(no builder)|(no such file or directory)/
             error "Missing compatible builder, so creating a new one first"
@@ -32,7 +43,7 @@ class Mrsk::Cli::Build < Mrsk::Cli::Base
 
   desc "pull", "Pull app image from registry onto servers"
   def pull
-    with_lock do
+    mutating do
       on(MRSK.hosts) do
         execute *MRSK.auditor.record("Pulled image with version #{MRSK.config.version}"), verbosity: :debug
         execute *MRSK.builder.clean, raise_on_non_zero_exit: false
@@ -43,7 +54,7 @@ class Mrsk::Cli::Build < Mrsk::Cli::Base
 
   desc "create", "Create a build setup"
   def create
-    with_lock do
+    mutating do
       run_locally do
         begin
           debug "Using builder: #{MRSK.builder.name}"
@@ -62,7 +73,7 @@ class Mrsk::Cli::Build < Mrsk::Cli::Base
 
   desc "remove", "Remove build setup"
   def remove
-    with_lock do
+    mutating do
       run_locally do
         debug "Using builder: #{MRSK.builder.name}"
         execute *MRSK.builder.remove
@@ -77,4 +88,19 @@ class Mrsk::Cli::Build < Mrsk::Cli::Base
       puts capture(*MRSK.builder.info)
     end
   end
+
+  private
+    def verify_local_dependencies
+      run_locally do
+        begin
+          execute *MRSK.builder.ensure_local_dependencies_installed
+        rescue SSHKit::Command::Failed => e
+          build_error = e.message =~ /command not found/ ?
+            "Docker is not installed locally" :
+            "Docker buildx plugin is not installed locally"
+
+          raise BuildError, build_error
+        end
+      end
+    end
 end

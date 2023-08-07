@@ -20,7 +20,7 @@ module Mrsk::Cli
     class_option :config_file, aliases: "-c", default: "config/deploy.yml", desc: "Path to config file"
     class_option :destination, aliases: "-d", desc: "Specify destination to be used for config file (staging -> deploy.staging.yml)"
 
-    class_option :skip_broadcast, aliases: "-B", type: :boolean, default: false, desc: "Skip audit broadcasts"
+    class_option :skip_hooks, aliases: "-H", type: :boolean, default: false, desc: "Don't run hooks"
 
     def initialize(*)
       super
@@ -78,51 +78,55 @@ module Mrsk::Cli
         puts "  Finished all in #{sprintf("%.1f seconds", runtime)}"
       end
 
-      def audit_broadcast(line)
-        run_locally { execute *MRSK.auditor.broadcast(line), verbosity: :debug }
-      end
+      def mutating
+        return yield if MRSK.holding_lock?
 
-      def with_lock
-        if MRSK.holding_lock?
+        MRSK.config.ensure_env_available
+
+        run_hook "pre-connect"
+
+        acquire_lock
+
+        begin
           yield
-        else
-          acquire_lock
-
-          begin
-            yield
-          rescue
-            if MRSK.hold_lock_on_error?
-              error "  \e[31mDeploy lock was not released\e[0m"
-            else
-              release_lock
-            end
-
-            raise
+        rescue
+          if MRSK.hold_lock_on_error?
+            error "  \e[31mDeploy lock was not released\e[0m"
+          else
+            release_lock
           end
 
-          release_lock
+          raise
         end
+
+        release_lock
       end
 
       def acquire_lock
-        say "Acquiring the deploy lock"
-        on(MRSK.primary_host) { execute *MRSK.lock.acquire("Automatic deploy lock", MRSK.config.version) }
+        raise_if_locked do
+          say "Acquiring the deploy lock...", :magenta
+          on(MRSK.primary_host) { execute *MRSK.lock.acquire("Automatic deploy lock", MRSK.config.version), verbosity: :debug }
+        end
 
         MRSK.holding_lock = true
+      end
+
+      def release_lock
+        say "Releasing the deploy lock...", :magenta
+        on(MRSK.primary_host) { execute *MRSK.lock.release, verbosity: :debug }
+
+        MRSK.holding_lock = false
+      end
+
+      def raise_if_locked
+        yield
       rescue SSHKit::Runner::ExecuteError => e
         if e.message =~ /cannot create directory/
-          invoke "mrsk:cli:lock:status", []
+          on(MRSK.primary_host) { puts capture_with_debug(*MRSK.lock.status) }
           raise LockError, "Deploy lock found"
         else
           raise e
         end
-      end
-
-      def release_lock
-        say "Releasing the deploy lock"
-        on(MRSK.primary_host) { execute *MRSK.lock.release }
-
-        MRSK.holding_lock = false
       end
 
       def hold_lock_on_error
@@ -134,5 +138,40 @@ module Mrsk::Cli
           MRSK.hold_lock_on_error = false
         end
       end
-  end
+
+      def run_hook(hook, **extra_details)
+        if !options[:skip_hooks] && MRSK.hook.hook_exists?(hook)
+          details = { hosts: MRSK.hosts.join(","), command: command, subcommand: subcommand }
+
+          say "Running the #{hook} hook...", :magenta
+          run_locally do
+            MRSK.with_verbosity(:debug) { execute *MRSK.hook.run(hook, **details, **extra_details) }
+          rescue SSHKit::Command::Failed
+            raise HookError.new("Hook `#{hook}` failed")
+          end
+        end
+      end
+
+      def command
+        @mrsk_command ||= begin
+          invocation_class, invocation_commands = *first_invocation
+          if invocation_class == Mrsk::Cli::Main
+            invocation_commands[0]
+          else
+            Mrsk::Cli::Main.subcommand_classes.find { |command, clazz| clazz == invocation_class }[0]
+          end
+        end
+      end
+
+      def subcommand
+        @mrsk_subcommand ||= begin
+          invocation_class, invocation_commands = *first_invocation
+          invocation_commands[0] if invocation_class != Mrsk::Cli::Main
+        end
+      end
+
+      def first_invocation
+        instance_variable_get("@_invocations").first
+      end
+    end
 end

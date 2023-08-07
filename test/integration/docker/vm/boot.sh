@@ -4,8 +4,6 @@ while [ ! -f /root/.ssh/authorized_keys ]; do echo "Waiting for ssh keys"; sleep
 
 service ssh restart
 
-dockerd &
+dockerd --max-concurrent-downloads 1 &
 
-trap "pkill -f sleep" term
-
-sleep infinity & wait
+exec sleep infinity

@@ -51,6 +51,14 @@ class Mrsk::Commander
     end
   end
 
+  def boot_strategy
+    if config.boot.limit.present?
+      { in: :groups, limit: config.boot.limit, wait: config.boot.wait }
+    else
+      {}
+    end
+  end
+
   def roles_on(host)
     roles.select { |role| role.hosts.include?(host.to_s) }.map(&:name)
   end
@@ -76,16 +84,28 @@ class Mrsk::Commander
     Mrsk::Commands::Accessory.new(config, name: name)
   end
 
-  def auditor(role: nil)
-    Mrsk::Commands::Auditor.new(config, role: role)
+  def auditor(**details)
+    Mrsk::Commands::Auditor.new(config, **details)
   end
 
   def builder
     @builder ||= Mrsk::Commands::Builder.new(config)
   end
 
+  def docker
+    @docker ||= Mrsk::Commands::Docker.new(config)
+  end
+
   def healthcheck
     @healthcheck ||= Mrsk::Commands::Healthcheck.new(config)
+  end
+
+  def hook
+    @hook ||= Mrsk::Commands::Hook.new(config)
+  end
+
+  def lock
+    @lock ||= Mrsk::Commands::Lock.new(config)
   end
 
   def prune
@@ -98,10 +118,6 @@ class Mrsk::Commander
 
   def traefik
     @traefik ||= Mrsk::Commands::Traefik.new(config)
-  end
-
-  def lock
-    @lock ||= Mrsk::Commands::Lock.new(config)
   end
 
   def with_verbosity(level)

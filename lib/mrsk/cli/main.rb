@@ -1,8 +1,8 @@
 class Mrsk::Cli::Main < Mrsk::Cli::Base
   desc "setup", "Setup all accessories and deploy app to servers"
   def setup
-    with_lock do
-      print_runtime do
+    print_runtime do
+      mutating do
         invoke "mrsk:cli:server:bootstrap"
         invoke "mrsk:cli:accessory:boot", [ "all" ]
         deploy
@@ -13,12 +13,9 @@ class Mrsk::Cli::Main < Mrsk::Cli::Base
   desc "deploy", "Deploy app to servers"
   option :skip_push, aliases: "-P", type: :boolean, default: false, desc: "Skip image build and push"
   def deploy
-    with_lock do
-      invoke_options = deploy_options
-
-      runtime = print_runtime do
-        say "Ensure curl and Docker are installed...", :magenta
-        invoke "mrsk:cli:server:bootstrap", [], invoke_options
+    runtime = print_runtime do
+      mutating do
+        invoke_options = deploy_options
 
         say "Log into image registry...", :magenta
         invoke "mrsk:cli:registry:login", [], invoke_options
@@ -31,6 +28,8 @@ class Mrsk::Cli::Main < Mrsk::Cli::Base
           invoke "mrsk:cli:build:deliver", [], invoke_options
         end
 
+        run_hook "pre-deploy"
+
         say "Ensure Traefik is running...", :magenta
         invoke "mrsk:cli:traefik:boot", [], invoke_options
 
@@ -40,25 +39,23 @@ class Mrsk::Cli::Main < Mrsk::Cli::Base
         say "Detect stale containers...", :magenta
         invoke "mrsk:cli:app:stale_containers", [], invoke_options
 
-        hold_lock_on_error do
-          invoke "mrsk:cli:app:boot", [], invoke_options
-        end
+        invoke "mrsk:cli:app:boot", [], invoke_options
 
         say "Prune old containers and images...", :magenta
         invoke "mrsk:cli:prune:all", [], invoke_options
       end
-
-      audit_broadcast "Deployed #{service_version} in #{runtime.round} seconds" unless options[:skip_broadcast]
     end
+
+    run_hook "post-deploy", runtime: runtime.round
   end
 
   desc "redeploy", "Deploy app to servers without bootstrapping servers, starting Traefik, pruning, and registry login"
   option :skip_push, aliases: "-P", type: :boolean, default: false, desc: "Skip image build and push"
   def redeploy
-    with_lock do
-      invoke_options = deploy_options
+    runtime = print_runtime do
+      mutating do
+        invoke_options = deploy_options
 
-      runtime = print_runtime do
         if options[:skip_push]
           say "Pull app image...", :magenta
           invoke "mrsk:cli:build:pull", [], invoke_options
@@ -67,61 +64,43 @@ class Mrsk::Cli::Main < Mrsk::Cli::Base
           invoke "mrsk:cli:build:deliver", [], invoke_options
         end
 
+        run_hook "pre-deploy"
+
         say "Ensure app can pass healthcheck...", :magenta
         invoke "mrsk:cli:healthcheck:perform", [], invoke_options
 
         say "Detect stale containers...", :magenta
         invoke "mrsk:cli:app:stale_containers", [], invoke_options
 
-        hold_lock_on_error do
-          invoke "mrsk:cli:app:boot", [], invoke_options
-        end
+        invoke "mrsk:cli:app:boot", [], invoke_options
       end
-
-      audit_broadcast "Redeployed #{service_version} in #{runtime.round} seconds" unless options[:skip_broadcast]
     end
+
+    run_hook "post-deploy", runtime: runtime.round
   end
 
   desc "rollback [VERSION]", "Rollback app to VERSION"
   def rollback(version)
-    with_lock do
-      invoke_options = deploy_options
+    rolled_back = false
+    runtime = print_runtime do
+      mutating do
+        invoke_options = deploy_options
 
-      hold_lock_on_error do
         MRSK.config.version = version
         old_version = nil
 
         if container_available?(version)
-          say "Start version #{version}, then wait #{MRSK.config.readiness_delay}s for app to boot before stopping the old version...", :magenta
+          run_hook "pre-deploy"
 
-          on(MRSK.hosts) do
-            execute *MRSK.auditor.record("Tagging #{MRSK.config.absolute_image} as the latest image"), verbosity: :debug
-            execute *MRSK.app.tag_current_as_latest
-          end
-
-          on(MRSK.hosts) do |host|
-            roles = MRSK.roles_on(host)
-
-            roles.each do |role|
-              app = MRSK.app(role: role)
-              old_version = capture_with_info(*app.current_running_version).strip.presence
-
-              execute *app.start
-
-              if old_version
-                sleep MRSK.config.readiness_delay
-
-                execute *app.stop(version: old_version), raise_on_non_zero_exit: false
-              end
-            end
-          end
-
-          audit_broadcast "Rolled back #{service_version(Mrsk::Utils.abbreviate_version(old_version))} to #{service_version}" unless options[:skip_broadcast]
+          invoke "mrsk:cli:app:boot", [], invoke_options.merge(version: version)
+          rolled_back = true
         else
           say "The app version '#{version}' is not available as a container (use 'mrsk app containers' for available versions)", :red
         end
       end
     end
+
+    run_hook "post-deploy", runtime: runtime.round if rolled_back
   end
 
   desc "details", "Show details about all containers"
@@ -163,6 +142,14 @@ class Mrsk::Cli::Main < Mrsk::Cli::Base
       puts "Created .env file"
     end
 
+    unless (hooks_dir = Pathname.new(File.expand_path(".mrsk/hooks"))).exist?
+      hooks_dir.mkpath
+      Pathname.new(File.expand_path("templates/sample_hooks", __dir__)).each_child do |sample_hook|
+        FileUtils.cp sample_hook, hooks_dir, preserve: true
+      end
+      puts "Created sample hooks in .mrsk/hooks"
+    end
+
     if options[:bundle]
       if (binstub = Pathname.new(File.expand_path("bin/mrsk"))).exist?
         puts "Binstub already exists in bin/mrsk (remove first to create a new one)"
@@ -193,7 +180,7 @@ class Mrsk::Cli::Main < Mrsk::Cli::Base
   desc "remove", "Remove Traefik, app, accessories, and registry session from servers"
   option :confirmed, aliases: "-y", type: :boolean, default: false, desc: "Proceed without confirmation question"
   def remove
-    with_lock do
+    mutating do
       if options[:confirmed] || ask("This will remove all containers and images. Are you sure?", limited_to: %w( y N ), default: "N") == "y"
         invoke "mrsk:cli:traefik:remove", [], options.without(:confirmed)
         invoke "mrsk:cli:app:remove", [], options.without(:confirmed)
@@ -220,6 +207,9 @@ class Mrsk::Cli::Main < Mrsk::Cli::Base
   desc "healthcheck", "Healthcheck application"
   subcommand "healthcheck", Mrsk::Cli::Healthcheck
 
+  desc "lock", "Manage the deploy lock"
+  subcommand "lock", Mrsk::Cli::Lock
+
   desc "prune", "Prune old application images and containers"
   subcommand "prune", Mrsk::Cli::Prune
 
@@ -232,26 +222,28 @@ class Mrsk::Cli::Main < Mrsk::Cli::Base
   desc "traefik", "Manage Traefik load balancer"
   subcommand "traefik", Mrsk::Cli::Traefik
 
-  desc "lock", "Manage the deploy lock"
-  subcommand "lock", Mrsk::Cli::Lock
-
   private
-    def container_available?(version, host: MRSK.primary_host)
-      available = nil
-
-      on(host) do
-        first_role = MRSK.roles_on(host).first
-        available = capture_with_info(*MRSK.app(role: first_role).container_id_for_version(version)).present?
+    def container_available?(version)
+      begin
+        on(MRSK.hosts) do
+          MRSK.roles_on(host).each do |role|
+            container_id = capture_with_info(*MRSK.app(role: role).container_id_for_version(version))
+            raise "Container not found" unless container_id.present?
+          end
+        end
+      rescue SSHKit::Runner::ExecuteError => e
+        if e.message =~ /Container not found/
+          say "Error looking for container version #{version}: #{e.message}"
+          return false
+        else
+          raise
+        end
       end
 
-      available
+      true
     end
 
     def deploy_options
       { "version" => MRSK.config.version }.merge(options.without("skip_push"))
-    end
-
-    def service_version(version = MRSK.config.abbreviated_version)
-      [ MRSK.config.service, version ].compact.join("@")
     end
 end
