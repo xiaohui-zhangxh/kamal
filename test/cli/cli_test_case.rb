@@ -36,10 +36,14 @@ class CliTestCase < ActiveSupport::TestCase
         .with { |arg1, arg2| arg1 == :mkdir && arg2 == ".kamal/locks/app" }
       SSHKit::Backend::Abstract.any_instance.stubs(:execute)
         .with { |arg1, arg2| arg1 == :rm && arg2 == ".kamal/locks/app/details" }
+      SSHKit::Backend::Abstract.any_instance.stubs(:capture_with_info)
+        .with { |*args| args[0..2] == [ :docker, :buildx, :inspect ] }
+        .returns("")
     end
 
     def assert_hook_ran(hook, output, version:, service_version:, hosts:, command:, subcommand: nil, runtime: false)
       performer = `whoami`.strip
+      service = service_version.split("@").first
 
       assert_match "Running the #{hook} hook...\n", output
 
@@ -49,6 +53,7 @@ class CliTestCase < ActiveSupport::TestCase
         KAMAL_PERFORMER=\"#{performer}\"\s
         KAMAL_VERSION=\"#{version}\"\s
         KAMAL_SERVICE_VERSION=\"#{service_version}\"\s
+        KAMAL_SERVICE=\"#{service}\"\s
         KAMAL_HOSTS=\"#{hosts}\"\s
         KAMAL_COMMAND=\"#{command}\"\s
         #{"KAMAL_SUBCOMMAND=\\\"#{subcommand}\\\"\\s" if subcommand}
